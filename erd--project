@@ -1,0 +1,205 @@
+# Database Entity-Relationship Diagram
+
+This document contains the Entity-Relationship Diagram (ERD) mapping the relationships between the tables in your Gold ERP system.
+
+```mermaid
+erDiagram
+    %% Master Tables
+    dealers {
+        int id PK
+        varchar code
+        varchar name
+        boolean is_active
+    }
+    
+    workers {
+        int id PK
+        varchar code
+        varchar name
+        boolean is_active
+    }
+    
+    product_types {
+        int id PK
+        varchar code
+        varchar name
+        boolean is_active
+    }
+    
+    design_types {
+        int id PK
+        varchar code
+        varchar name
+        int product_type_id FK
+    }
+    
+    alloy_types {
+        int id PK
+        varchar code
+        varchar name
+    }
+
+    %% Daybook & Ledger
+    daybook_entries {
+        int serial_no PK
+        date entry_date
+        varchar type
+    }
+    
+    ledger_accounts {
+        int id PK
+        varchar account_name
+        varchar account_type
+    }
+    
+    ledger_entries {
+        int id PK
+        int account_id FK
+        int daybook_sno FK
+        float debit_amount
+        float credit_amount
+    }
+    
+    v_account_entries {
+        int id PK
+        int worker_id FK
+        int daybook_sno FK
+        float balance_g
+    }
+
+    %% Gold Box
+    gold_box_stock {
+        int id PK
+        int daybook_sno FK
+        float weight_g
+    }
+    
+    gold_box_issues {
+        int id PK
+        int worker_id FK
+        int daybook_sno FK
+        float weight_g
+    }
+
+    %% Core Inventory
+    gold_receipts {
+        int id PK
+        int dealer_id FK
+        int daybook_sno FK
+        float weight_g
+    }
+    
+    chain_stock {
+        int id PK
+        int design_type_id FK
+        int product_type_id FK
+        float weight_g
+    }
+    
+    finished_stock {
+        int id PK
+        int kambi_batch_id FK
+        int product_type_id FK
+        int design_type_id FK
+        float weight_balance_g
+    }
+
+    tag_stock {
+        int id PK
+        int product_type_id FK
+        int design_type_id FK
+        float tagged_weight_g
+    }
+
+    %% Manufacturing Processes
+    melt_batches {
+        int id PK
+        int worker_id FK
+        int product_type_id FK
+        float final_916_g
+    }
+    
+    melt_batch_inputs {
+        int id PK
+        int melt_batch_id FK
+        int receipt_id FK
+        float weight_used_g
+    }
+    
+    melt_batch_alloys {
+        int id PK
+        int melt_batch_id FK
+        int alloy_type_id FK
+        float weight_g
+    }
+    
+    kambi_batches {
+        int id PK
+        int melt_batch_id FK
+        int worker_id FK
+        int product_type_id FK
+        float weight_out_g
+    }
+    
+    chain_batches {
+        int id PK
+        int kambi_batch_id FK
+        int worker_id FK
+        int design_type_id FK
+        int product_type_id FK
+        float weight_out_g
+    }
+    
+    solder_returns {
+        int id PK
+        int product_type_id FK
+        int sent_to_melt_batch_id FK
+        float weight_g
+    }
+
+    %% Relationships
+    
+    %% Master relations
+    product_types ||--o{ design_types : "has"
+    dealers ||--o{ gold_receipts : "provides"
+    workers ||--o{ v_account_entries : "has"
+    workers ||--o{ gold_box_issues : "receives"
+    workers ||--o{ melt_batches : "processes"
+    workers ||--o{ kambi_batches : "processes"
+    workers ||--o{ chain_batches : "processes"
+
+    %% Accounting relations
+    ledger_accounts ||--o{ ledger_entries : "contains"
+    daybook_entries ||--o{ ledger_entries : "records"
+    daybook_entries ||--o{ v_account_entries : "records"
+    daybook_entries ||--o{ gold_box_stock : "records"
+    daybook_entries ||--o{ gold_box_issues : "records"
+    daybook_entries ||--o{ gold_receipts : "records"
+    daybook_entries ||--o{ melt_batches : "records"
+
+    %% Melt Process
+    melt_batches ||--o{ melt_batch_inputs : "consumes"
+    gold_receipts ||--o{ melt_batch_inputs : "supplies"
+    melt_batches ||--o{ melt_batch_alloys : "uses"
+    alloy_types ||--o{ melt_batch_alloys : "type"
+    melt_batches ||--o{ solder_returns : "re-melts"
+    
+    %% Manufacturing flow
+    melt_batches ||--o{ kambi_batches : "produces"
+    kambi_batches ||--o{ chain_batches : "produces"
+    kambi_batches ||--o{ finished_stock : "supplies"
+    
+    %% Classification
+    product_types ||--o{ melt_batches : "categorizes"
+    product_types ||--o{ kambi_batches : "categorizes"
+    product_types ||--o{ chain_batches : "categorizes"
+    product_types ||--o{ chain_stock : "categorizes"
+    product_types ||--o{ finished_stock : "categorizes"
+    product_types ||--o{ tag_stock : "categorizes"
+    product_types ||--o{ solder_returns : "categorizes"
+    
+    design_types ||--o{ chain_batches : "specifies"
+    design_types ||--o{ chain_stock : "specifies"
+    design_types ||--o{ finished_stock : "specifies"
+    design_types ||--o{ tag_stock : "specifies"
+```

@@ -85,7 +85,11 @@ class MeltService(BaseService):
                           weight_out_916_g: float, ng_weight_g: float = 0.0,
                           kambi_weight_g: float = 0.0, worker_id: int = None,
                           product_type_id: int = None, notes: str = None,
-                          alloy_additions: list = None):
+                          alloy_additions: list = None,
+                          subtype: str = None, purity_value: float = None,
+                          base_916_g: float = None, silver_g: float = None,
+                          copper_g: float = None, extra_alloy_g: float = None,
+                          final_916_g: float = None, **kwargs):
         """
         alloy_additions: list of {"alloy_type_id": int, "weight_g": float}
         """
@@ -107,6 +111,13 @@ class MeltService(BaseService):
                 loss_g=loss,
                 product_type_id=product_type_id,
                 notes=notes,
+                subtype=subtype,
+                purity_value=purity_value,
+                base_916_g=base_916_g,
+                silver_g=silver_g,
+                copper_g=copper_g,
+                extra_alloy_g=extra_alloy_g,
+                final_916_g=final_916_g
             )
             db.add(batch)
             db.flush()
