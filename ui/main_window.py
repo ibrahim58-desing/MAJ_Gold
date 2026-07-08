@@ -19,7 +19,8 @@ from ui.pages.stock_pages import FinishedStockPage, TotStockPage, StockSummaryPa
 from ui.pages.ledger_page import LedgerPage
 from ui.pages.v_account_page import VAccountPage
 from ui.pages.gs_pcs_page import GSPCSPage
-from ui.pages.process_pages import WireSheetPage, PolishPage, FacetingPage, KambiPage
+from ui.pages.process_pages import PolishPage, FacetingPage, KambiPage
+from ui.wire_sheet_ui import WireSheetUI
 from config.settings import WINDOW_TITLE, WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT
 
 
@@ -30,7 +31,7 @@ PAGE_MAP = {
     "gold_receipt":  GoldReceiptPage,
     "melt":          MeltPage,
     "gold_box":      GoldBoxPage,
-    "wire_sheet":    WireSheetPage,
+    "wire_sheet":    WireSheetUI,
     "goldsmith":     GoldsmithPage,
     "polish":        PolishPage,
     "faceting":      FacetingPage,

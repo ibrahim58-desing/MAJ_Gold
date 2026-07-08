@@ -104,6 +104,43 @@ def migrate_add_missing_columns(eng):
                 ))
         conn.commit()
 
+def migrate_wire_sheet_batches(eng):
+    """
+    Add new columns needed by the redesigned WireSheetBatch model.
+    Old columns (weight_in_g, weight_out_g, chains_count, solder_weight_g,
+    product_type_id) are left in place — SQLite cannot DROP columns in older
+    versions and SQLAlchemy simply ignores them.
+    Safe to run on every launch.
+    """
+    required = {
+        "batch_type":      "TEXT DEFAULT 'wire'",
+        "rod_weight_g":    "REAL DEFAULT 0.0",
+        "output_weight_g": "REAL DEFAULT 0.0",
+        "dye_weight_g":    "REAL DEFAULT 0.0",
+        "wire_weight_g":   "REAL DEFAULT 0.0",
+        "strips_weight_g": "REAL DEFAULT 0.0",
+        "total_output_g":  "REAL DEFAULT 0.0",
+        "loss_pct":        "REAL DEFAULT 0.0",
+        "status":          "TEXT DEFAULT 'pending'",
+    }
+    with eng.connect() as conn:
+        existing = _get_columns(conn, "wire_sheet_batches")
+        if not existing:          # table doesn't exist yet; create_all handles it
+            return
+        for col, col_type in required.items():
+            if col not in existing:
+                conn.execute(text(
+                    f"ALTER TABLE wire_sheet_batches ADD COLUMN {col} {col_type}"
+                ))
+        # Seed rod_weight_g from old weight_in_g where available
+        if "weight_in_g" in existing:
+            conn.execute(text(
+                "UPDATE wire_sheet_batches SET rod_weight_g = weight_in_g "
+                "WHERE weight_in_g IS NOT NULL AND "
+                "(rod_weight_g IS NULL OR rod_weight_g = 0.0)"
+            ))
+        conn.commit()
+
 
 def init_db():
     """Create all tables if they don't exist, then run migrations."""
@@ -115,3 +152,4 @@ def init_db():
     # Run in order: rename-style migration first, then add missing columns
     migrate_melt_batches(engine)
     migrate_add_missing_columns(engine)
+    migrate_wire_sheet_batches(engine)

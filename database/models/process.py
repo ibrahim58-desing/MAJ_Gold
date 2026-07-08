@@ -10,22 +10,27 @@ from .base import Base
 
 
 class WireSheetBatch(Base):
-    __tablename__ = "wire_sheet_batches"
+    __tablename__ = 'wire_sheet_batches'
 
-    id               = Column(Integer, primary_key=True, index=True)
-    batch_date       = Column(Date, nullable=False, index=True)
-    worker_id        = Column(Integer, ForeignKey("workers.id"))
-    melt_batch_id    = Column(Integer, ForeignKey("melt_batches.id"), nullable=False)
-    weight_in_g      = Column(Float, nullable=False)
-    weight_out_g     = Column(Float, nullable=False)
-    loss_g           = Column(Float, default=0.0)
-    chains_count     = Column(Integer, default=0)
-    solder_weight_g  = Column(Float, default=0.0)
-    product_type_id  = Column(Integer, ForeignKey("product_types.id"))
-    daybook_sno      = Column(Integer, ForeignKey("daybook_entries.serial_no"))
-    notes            = Column(Text)
-    created_at       = Column(DateTime, server_default=func.now())
+    id              = Column(Integer, primary_key=True, index=True)
+    batch_date      = Column(Date, nullable=False, index=True)
+    batch_type      = Column(String(20), default='wire')       # dye | wire | strip
+    rod_weight_g    = Column(Float, default=0.0)               # CREDIT — gold input
+    output_weight_g = Column(Float, default=0.0)               # DEBIT  — gold output (updated on completion)
+    loss_g          = Column(Float, default=0.0)
+    loss_pct        = Column(Float, default=0.0)
+    status          = Column(String(20), default='pending')    # pending | completed
+    daybook_sno     = Column(Integer, ForeignKey('daybook_entries.serial_no'), nullable=True)
+    notes           = Column(Text)
+    created_at      = Column(DateTime, server_default=func.now())
 
+    # ── Legacy columns — kept to satisfy old DB NOT-NULL constraints ──
+    weight_in_g     = Column(Float, default=0.0)
+    weight_out_g    = Column(Float, default=0.0)
+    melt_batch_id   = Column(Integer, ForeignKey('melt_batches.id'), default=0)
+    worker_id       = Column(Integer, ForeignKey('workers.id'), nullable=True)
+
+    melt_batch        = relationship("MeltBatch", foreign_keys=[melt_batch_id])
     goldsmith_batches = relationship("GoldsmithBatch", back_populates="wire_sheet_batch")
 
 
