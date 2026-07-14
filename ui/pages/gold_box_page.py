@@ -41,8 +41,9 @@ class GoldBoxPage(QWidget):
         tabs.addTab(self._balance_tab, "📊  Daily Balance")
         layout.addWidget(tabs)
 
-        DBWorker(MasterService.get_workers).result.connect(self._on_workers)
-        DBWorker(MasterService.get_workers).start()
+        w = DBWorker(MasterService.get_workers)
+        w.result.connect(self._on_workers)
+        w.start()
         self._load_balance()
 
     def _on_workers(self, workers):
@@ -54,6 +55,12 @@ class GoldBoxPage(QWidget):
         w = DBWorker(GoldBoxService.get_current_balance)
         w.result.connect(lambda v: self._balance_lbl.setText(f"Current Balance: {v:,.3f} g"))
         w.start()
+
+    def refresh(self):
+        self._load_balance()
+        self._stock_tab._load()
+        self._issue_tab._load()
+        self._balance_tab._load()
 
 
 class StockInTab(QWidget):

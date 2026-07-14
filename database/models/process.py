@@ -7,6 +7,7 @@ from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKe
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .base import Base
+import database.models.stock # ensure MeltBatch is loaded in registry
 
 
 class WireSheetBatch(Base):
@@ -16,6 +17,9 @@ class WireSheetBatch(Base):
     batch_date      = Column(Date, nullable=False, index=True)
     batch_type      = Column(String(20), default='wire')       # dye | wire | strip
     rod_weight_g    = Column(Float, default=0.0)               # CREDIT — gold input
+    dye_weight_g    = Column(Float, default=0.0)               
+    wire_weight_g   = Column(Float, default=0.0)               
+    strips_weight_g = Column(Float, default=0.0)               
     output_weight_g = Column(Float, default=0.0)               # DEBIT  — gold output (updated on completion)
     loss_g          = Column(Float, default=0.0)
     loss_pct        = Column(Float, default=0.0)
@@ -23,6 +27,9 @@ class WireSheetBatch(Base):
     daybook_sno     = Column(Integer, ForeignKey('daybook_entries.serial_no'), nullable=True)
     notes           = Column(Text)
     created_at      = Column(DateTime, server_default=func.now())
+
+    assigned_to_type = Column(String(20), default="INDIVIDUAL")  # "TEAM" | "INDIVIDUAL"
+    team_id          = Column(Integer, ForeignKey('teams.id'), nullable=True)
 
     # ── Legacy columns — kept to satisfy old DB NOT-NULL constraints ──
     weight_in_g     = Column(Float, default=0.0)
@@ -105,15 +112,75 @@ class PolishBatch(Base):
 
     id                  = Column(Integer, primary_key=True, index=True)
     batch_date          = Column(Date, nullable=False, index=True)
-    worker_id           = Column(Integer, ForeignKey("workers.id"))
-    goldsmith_batch_id  = Column(Integer, ForeignKey("goldsmith_batches.id"), nullable=False)
+    assigned_to_type    = Column(String(20), default="INDIVIDUAL") # "TEAM" | "INDIVIDUAL"
+    team_id             = Column(Integer, ForeignKey("teams.id"), nullable=True)
+    worker_id           = Column(Integer, ForeignKey("workers.id"), nullable=True)
+    goldsmith_return_id = Column(Integer, ForeignKey('goldsmith_returns.id'), nullable=True)
+    
+    # legacy columns kept to avoid breaking other logic
+    goldsmith_batch_id  = Column(Integer, ForeignKey("goldsmith_batches.id"), nullable=True)
     chains_in           = Column(Integer, default=0)
     chains_out          = Column(Integer, default=0)
-    notes               = Column(Text, default="No gold loss in polish process")
+
+    input_pcs           = Column(Integer, nullable=False, default=0)
+    input_inches        = Column(Float, nullable=False, default=0.0)
+    input_weight_g      = Column(Float, nullable=False, default=0.0)
+    input_qty_baby      = Column(Integer, default=0)
+    input_qty_normal    = Column(Integer, default=0)
+    input_qty_30inch    = Column(Integer, default=0)
+    output_pcs          = Column(Integer, default=0)
+    output_inches       = Column(Float, default=0.0)
+    output_weight_g     = Column(Float, default=0.0)
+    output_qty_baby     = Column(Integer, default=0)
+    output_qty_normal   = Column(Integer, default=0)
+    output_qty_30inch   = Column(Integer, default=0)
+    polish_loss_g       = Column(Float, default=0.0)
+    polish_loss_pcs     = Column(Integer, default=0)
+    polish_loss_pct     = Column(Float, default=0.0)
+    status              = Column(String(20), default='pending')
+    daybook_sno         = Column(Integer, ForeignKey("daybook_entries.serial_no"), nullable=True)
+    
+    notes               = Column(Text)
     created_at          = Column(DateTime, server_default=func.now())
 
     goldsmith_batch   = relationship("GoldsmithBatch", back_populates="polish_batches")
     faceting_batches  = relationship("FacetingBatch", back_populates="polish_batch")
+
+class GoldsmithIssue(Base):
+    __tablename__ = 'goldsmith_issues'
+    id               = Column(Integer, primary_key=True)
+    issue_date       = Column(Date, nullable=False)
+    issue_type       = Column(String(10), nullable=False)
+    team_id          = Column(Integer, ForeignKey('teams.id'), nullable=True)
+    worker_id        = Column(Integer, ForeignKey('workers.id'), nullable=True)
+    dye_issued_g     = Column(Float, default=0.0)
+    wire_issued_g    = Column(Float, default=0.0)
+    strips_issued_g  = Column(Float, default=0.0)
+    misc_issued_g    = Column(Float, default=0.0)  # complaint/repair gold — not dye/wire/strips
+    complaint_id     = Column(Integer, ForeignKey('complaints.id'), nullable=True)
+    total_issued_g   = Column(Float, default=0.0)
+    status           = Column(String(20), default='open')
+    daybook_sno      = Column(Integer, nullable=True)
+    notes            = Column(Text)
+    created_at       = Column(DateTime, server_default=func.now())
+
+class GoldsmithReturn(Base):
+    __tablename__ = 'goldsmith_returns'
+    id               = Column(Integer, primary_key=True)
+    issue_id         = Column(Integer, ForeignKey('goldsmith_issues.id'), nullable=False)
+    return_date      = Column(Date, nullable=False)
+    pcs              = Column(Integer, nullable=False)
+    inches_per_pc    = Column(Float, nullable=False)
+    total_inches     = Column(Float, default=0.0)
+    qty_baby         = Column(Integer, default=0)
+    qty_normal       = Column(Integer, default=0)
+    qty_30inch       = Column(Integer, default=0)
+    weight_g         = Column(Float, nullable=False)
+    loss_g           = Column(Float, default=0.0)
+    loss_pct         = Column(Float, default=0.0)
+    daybook_sno      = Column(Integer, nullable=True)
+    notes            = Column(Text)
+    created_at       = Column(DateTime, server_default=func.now())
 
 
 class FacetingBatch(Base):
@@ -124,10 +191,21 @@ class FacetingBatch(Base):
     to_date          = Column(Date, nullable=False, index=True)
     worker_id        = Column(Integer, ForeignKey("workers.id"))
     team_id          = Column(Integer, ForeignKey("teams.id"))
+    assigned_to_type = Column(String(20), default="INDIVIDUAL")  # "TEAM" | "INDIVIDUAL"
+    status           = Column(String(20), default="pending")     # pending | completed
     polish_batch_id  = Column(Integer, ForeignKey("polish_batches.id"))
     weight_in_g      = Column(Float, nullable=False)
     weight_out_g     = Column(Float, nullable=False)
     weight_loss_g    = Column(Float, default=0.0)
+    loss_routed      = Column(Boolean, default=False)  # loss split (melting vs gold box) decided yet?
+    loss_to_melting_g   = Column(Float, default=0.0)  # part of weight_loss_g recycled back to melting
+    loss_to_gold_box_g  = Column(Float, default=0.0)  # part of weight_loss_g routed to gold box
+    in_qty_baby      = Column(Integer, default=0)
+    in_qty_normal    = Column(Integer, default=0)
+    in_qty_30inch    = Column(Integer, default=0)
+    out_qty_baby     = Column(Integer, default=0)
+    out_qty_normal   = Column(Integer, default=0)
+    out_qty_30inch   = Column(Integer, default=0)
     fin_pcs          = Column(Integer, default=0)
     ree_cu           = Column(Integer, default=0)
     act_fin_pcs      = Column(Integer, default=0)

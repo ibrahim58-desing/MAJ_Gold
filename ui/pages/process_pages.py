@@ -1,11 +1,12 @@
-"""Wire & Sheet, Polish, Faceting, Kambi pages — one file for brevity."""
+"""Wire & Sheet, Polish, Faceting pages — one file for brevity."""
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QDialog, QFormLayout, QDateEdit, QDoubleSpinBox, QSpinBox,
-    QComboBox, QDialogButtonBox, QLineEdit, QCheckBox, QTabWidget
+    QComboBox, QDialogButtonBox, QLineEdit, QCheckBox, QTabWidget, QMessageBox
 )
 from PyQt6.QtCore import QDate
 from ui.widgets.widgets import DataTable, SearchBar, Toast, LoadingOverlay, ConfirmDialog
+from ui.widgets.process_widgets import ChainTallyWidget, WorkerTeamSelector
 from workers.db_worker import DBWorker
 from services.process_service import ProcessService
 from services.master_service import MasterService
@@ -206,13 +207,31 @@ class PolishDialog(QDialog):
 class FacetingPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._batches = []; self._workers = []; self._teams = []
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20); layout.setSpacing(16)
 
-        title = QLabel("💎  FACETING BATCHES")
+        title = QLabel("💎  FACETING")
         title.setStyleSheet("font-size:20px; font-weight:800; color:#F0F4FF;")
         layout.addWidget(title)
+
+        tabs = QTabWidget()
+        self._batches_tab = FacetingBatchesTab()
+        self._loss_tab = FacetingLossTab()
+        tabs.addTab(self._batches_tab, "📋  Batches")
+        tabs.addTab(self._loss_tab, "♻  Loss")
+        layout.addWidget(tabs)
+
+    def refresh(self):
+        self._batches_tab.refresh()
+        self._loss_tab.refresh()
+
+
+class FacetingBatchesTab(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._batches = []
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10); layout.setSpacing(10)
 
         bar = QHBoxLayout()
         add_btn = QPushButton("＋  New Faceting Batch")
@@ -220,26 +239,19 @@ class FacetingPage(QWidget):
         bar.addStretch(); bar.addWidget(add_btn)
         layout.addLayout(bar)
 
-        self._table = DataTable(["ID","From","To","Worker/Team","Wt In (g)","Wt Out (g)",
-                                  "Loss (g)","Fin Pcs","Act Pcs","V Acc","Notes"])
+        self._table = DataTable(["ID","From","To","Assigned To","Wt In (g)","Wt Out (g)",
+                                  "Loss (g)","Loss→Melt (g)","Loss→GBox (g)","Loss Routed",
+                                  "Status","Notes"])
         layout.addWidget(self._table, 1)
 
         act = QHBoxLayout()
-        edit_btn = QPushButton("✏  Edit"); edit_btn.setObjectName("BtnSecondary"); edit_btn.clicked.connect(self._edit)
+        update_btn = QPushButton("⚙  Update"); update_btn.setObjectName("BtnPrimary"); update_btn.clicked.connect(self._update)
         del_btn = QPushButton("🗑  Delete"); del_btn.setObjectName("BtnDanger"); del_btn.clicked.connect(self._delete)
-        act.addStretch(); act.addWidget(edit_btn); act.addWidget(del_btn)
+        act.addStretch(); act.addWidget(update_btn); act.addWidget(del_btn)
         layout.addLayout(act)
 
         self._overlay = LoadingOverlay(self)
-        self._load_masters()
-
-    def _load_masters(self):
-        w1 = DBWorker(MasterService.get_workers)
-        w1.result.connect(lambda w: setattr(self, '_workers', w))
-        w1.start()
-        w2 = DBWorker(MasterService.get_teams)
-        w2.result.connect(lambda t: setattr(self, '_teams', t) or self._load())
-        w2.start()
+        self._load()
 
     def _load(self, *_):
         self._overlay.show_over(self)
@@ -249,27 +261,36 @@ class FacetingPage(QWidget):
     def _on_data(self, batches):
         self._overlay.hide_overlay(); self._batches = batches
         self._table.populate([[b.id, fmt_date(b.from_date), fmt_date(b.to_date),
-                               f"W:{b.worker_id} T:{b.team_id}",
+                               b.assigned_to_type or "INDIVIDUAL",
                                fmt_weight(b.weight_in_g), fmt_weight(b.weight_out_g),
-                               fmt_weight(b.weight_loss_g), b.fin_pcs, b.act_fin_pcs,
-                               "✅" if b.v_account_used else "❌", b.notes or ""] for b in batches])
+                               fmt_weight(b.weight_loss_g),
+                               fmt_weight(b.loss_to_melting_g or 0) if b.loss_routed else "—",
+                               fmt_weight(b.loss_to_gold_box_g or 0) if b.loss_routed else "—",
+                               ("Yes" if b.loss_routed else "No") if b.status == "completed" else "—",
+                               b.status or "pending", b.notes or ""] for b in batches])
 
     def _add(self):
-        dlg = FacetingDialog(self, self._workers, self._teams)
+        dlg = FacetingCreateDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             DBWorker(lambda: ProcessService.create_faceting_batch(**dlg.get_data())).start()
             Toast.show_toast(self, "Faceting batch created.", "success"); self._load()
 
-    def _edit(self):
+    def _update(self):
         row = self._table.currentRow()
         if row < 0: return Toast.show_toast(self, "Select a batch.", "warning")
         bid = int(self._table.item(row, 0).text())
         batch = next((b for b in self._batches if b.id == bid), None)
         if not batch: return
-        dlg = FacetingDialog(self, self._workers, self._teams, batch)
+        if batch.status == "completed":
+            return Toast.show_toast(self, "Batch is already completed.", "warning")
+        dlg = FacetingUpdateDialog(self, batch)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            DBWorker(lambda: ProcessService.update_faceting_batch(bid, **dlg.get_data())).start()
-            Toast.show_toast(self, "Updated.", "success"); self._load()
+            def _run():
+                ProcessService.update_faceting_output(bid, **dlg.get_data())
+            w = DBWorker(_run)
+            w.error.connect(lambda m: Toast.show_toast(self, f"Failed: {m}", "error"))
+            w.result.connect(lambda _: (Toast.show_toast(self, "Faceting output recorded.", "success"), self._load()))
+            w.start()
 
     def _delete(self):
         row = self._table.currentRow()
@@ -278,162 +299,200 @@ class FacetingPage(QWidget):
         if ConfirmDialog.ask(self, "Delete", "Delete this faceting batch?"):
             DBWorker(lambda: ProcessService.delete_faceting_batch(bid)).start(); self._load()
 
+    def refresh(self):
+        self._load()
 
-class FacetingDialog(QDialog):
-    def __init__(self, parent, workers, teams, batch=None):
-        super().__init__(parent); self.setWindowTitle("Faceting Batch")
-        self.setFixedSize(440, 480); self.setModal(True)
+
+class FacetingCreateDialog(QDialog):
+    """Step 1: who is doing the work, how much gold, and what chain sizes went in."""
+    def __init__(self, parent):
+        super().__init__(parent); self.setWindowTitle("New Faceting Batch")
+        self.setFixedSize(440, 560); self.setModal(True)
         form = QFormLayout(self); form.setContentsMargins(20, 20, 20, 20); form.setSpacing(10)
-        self._from = QDateEdit(); self._from.setCalendarPopup(True)
-        self._from.setDate(QDate.fromString(str(batch.from_date), "yyyy-MM-dd") if batch else QDate.currentDate())
-        self._to = QDateEdit(); self._to.setCalendarPopup(True)
-        self._to.setDate(QDate.fromString(str(batch.to_date), "yyyy-MM-dd") if batch else QDate.currentDate())
-        self._worker = QComboBox()
-        self._worker_ids = [None] + [w.id for w in workers]
-        self._worker.addItems(["— none —"] + [f"{w.code}" for w in workers])
-        self._team = QComboBox()
-        self._team_ids = [None] + [t.id for t in teams]
-        self._team.addItems(["— none —"] + [t.name for t in teams])
-        self._wt_in = QDoubleSpinBox(); self._wt_in.setRange(0,999999); self._wt_in.setDecimals(3)
-        self._wt_in.setValue(batch.weight_in_g if batch else 0)
-        self._wt_out = QDoubleSpinBox(); self._wt_out.setRange(0,999999); self._wt_out.setDecimals(3)
-        self._wt_out.setValue(batch.weight_out_g if batch else 0)
-        self._fin_pcs = QSpinBox(); self._fin_pcs.setRange(0, 999999)
-        self._fin_pcs.setValue(batch.fin_pcs if batch else 0)
-        self._act_pcs = QSpinBox(); self._act_pcs.setRange(0, 999999)
-        self._act_pcs.setValue(batch.act_fin_pcs if batch else 0)
-        self._ree_cu = QSpinBox(); self._ree_cu.setRange(0, 999999)
-        self._ree_cu.setValue(batch.ree_cu if batch else 0)
-        self._v_acc = QCheckBox("Use V Account")
-        self._v_acc.setChecked(batch.v_account_used if batch else True)
-        self._notes = QLineEdit(batch.notes or "" if batch else "")
-        for lbl, w in [("From Date *", self._from), ("To Date *", self._to),
-                        ("Worker", self._worker), ("Team", self._team),
-                        ("Wt In (g) *", self._wt_in), ("Wt Out (g) *", self._wt_out),
-                        ("Fin Pcs", self._fin_pcs), ("Act Fin Pcs", self._act_pcs),
-                        ("REE CU", self._ree_cu), ("", self._v_acc), ("Notes", self._notes)]:
-            l = QLabel(lbl); l.setObjectName("FieldLabel"); form.addRow(l, w)
+
+        self._from = QDateEdit(); self._from.setCalendarPopup(True); self._from.setDate(QDate.currentDate())
+        l = QLabel("From Date *"); l.setObjectName("FieldLabel"); form.addRow(l, self._from)
+
+        self._selector = WorkerTeamSelector(process_type="FACETING")
+        form.addRow(self._selector)
+
+        self._wt_in = QDoubleSpinBox(); self._wt_in.setRange(0, 999999); self._wt_in.setDecimals(3)
+        l = QLabel("Wt In (g) *"); l.setObjectName("FieldLabel"); form.addRow(l, self._wt_in)
+
+        l = QLabel("Chain Length — click to tally *"); l.setObjectName("FieldLabel"); form.addRow(l)
+        self._tally = ChainTallyWidget()
+        form.addRow(self._tally)
+
+        self._notes = QLineEdit()
+        l = QLabel("Notes"); l.setObjectName("FieldLabel"); form.addRow(l, self._notes)
+
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
+        btns.accepted.connect(self._validate_and_accept); btns.rejected.connect(self.reject)
         form.addRow(btns)
 
+    def _validate_and_accept(self):
+        if self._wt_in.value() <= 0:
+            QMessageBox.warning(self, "Error", "Wt In must be > 0"); return
+        self.accept()
+
     def get_data(self):
+        counts = self._tally.counts
         return {
-            "from_date": self._from.date().toPyDate(), "to_date": self._to.date().toPyDate(),
-            "worker_id": self._worker_ids[self._worker.currentIndex()],
-            "team_id": self._team_ids[self._team.currentIndex()],
-            "weight_in_g": self._wt_in.value(), "weight_out_g": self._wt_out.value(),
-            "fin_pcs": self._fin_pcs.value(), "act_fin_pcs": self._act_pcs.value(),
-            "ree_cu": self._ree_cu.value(), "v_account_used": self._v_acc.isChecked(),
+            "from_date": self._from.date().toPyDate(),
+            **self._selector.as_dict(),
+            "weight_in_g": self._wt_in.value(),
+            "in_qty_baby": counts["baby"], "in_qty_normal": counts["normal"],
+            "in_qty_30inch": counts["30inch"],
             "notes": self._notes.text() or None,
         }
 
 
+class FacetingUpdateDialog(QDialog):
+    """Step 2: just the output weight and chain tally. At this point it's
+    usually not yet known whether the resulting loss is clean scrap (goes
+    back to Melting) or mixed/dirty (goes to the Gold Box) — that decision
+    is made later, once it's actually known, on the Faceting Loss page."""
+    def __init__(self, parent, batch):
+        super().__init__(parent); self.setWindowTitle(f"Update Faceting Batch #{batch.id}")
+        self.setFixedSize(440, 420); self.setModal(True)
+        form = QFormLayout(self); form.setContentsMargins(20, 20, 20, 20); form.setSpacing(10)
+
+        lbl_in = QLabel(f"Wt In: {batch.weight_in_g:.3f} g"); lbl_in.setObjectName("FieldLabel")
+        form.addRow(lbl_in)
+
+        self._to = QDateEdit(); self._to.setCalendarPopup(True); self._to.setDate(QDate.currentDate())
+        l = QLabel("To Date *"); l.setObjectName("FieldLabel"); form.addRow(l, self._to)
+
+        self._wt_out = QDoubleSpinBox(); self._wt_out.setRange(0, 999999); self._wt_out.setDecimals(3)
+        l = QLabel("Wt Out (g) *"); l.setObjectName("FieldLabel"); form.addRow(l, self._wt_out)
+
+        l = QLabel("Chain Length — click to tally *"); l.setObjectName("FieldLabel"); form.addRow(l)
+        self._tally = ChainTallyWidget()
+        form.addRow(self._tally)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self._validate_and_accept); btns.rejected.connect(self.reject)
+        form.addRow(btns)
+
+    def _validate_and_accept(self):
+        if self._wt_out.value() <= 0:
+            QMessageBox.warning(self, "Error", "Wt Out must be > 0"); return
+        self.accept()
+
+    def get_data(self):
+        counts = self._tally.counts
+        return {
+            "to_date": self._to.date().toPyDate(), "weight_out_g": self._wt_out.value(),
+            "out_qty_baby": counts["baby"], "out_qty_normal": counts["normal"],
+            "out_qty_30inch": counts["30inch"],
+        }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Kambi
+# Faceting Loss — decide, after the fact, where a completed batch's loss goes
 # ─────────────────────────────────────────────────────────────────────────────
-class KambiPage(QWidget):
+class FacetingLossTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._batches = []; self._workers = []
+        self._batches = []
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20); layout.setSpacing(16)
+        layout.setContentsMargins(10, 10, 10, 10); layout.setSpacing(10)
 
-        title = QLabel("🔩  KAMBI — Linking Process")
-        title.setStyleSheet("font-size:20px; font-weight:800; color:#F0F4FF;")
-        layout.addWidget(title)
+        info = QLabel("Completed Faceting batches whose weight loss hasn't been assigned yet. "
+                       "Decide once it's known whether it's clean scrap (→ Melting) or dirty/mixed (→ Gold Box). "
+                       "Once assigned, the split stays visible on the Batches tab.")
+        info.setStyleSheet("color:#4A5568; font-size:12px; font-style:italic;")
+        info.setWordWrap(True)
+        layout.addWidget(info)
 
-        bar = QHBoxLayout()
-        add_btn = QPushButton("＋  New Kambi Batch")
-        add_btn.setObjectName("BtnPrimary"); add_btn.clicked.connect(self._add)
-        bar.addStretch(); bar.addWidget(add_btn)
-        layout.addLayout(bar)
-
-        self._table = DataTable(["ID","Date","Wt In (g)","Wt Out (g)","Loss (g)",
-                                  "GB Drawn (g)","Returned (g)","Chains","Hooks","Notes"])
+        self._table = DataTable(["ID","From","To","Assigned To","Wt In (g)","Wt Out (g)","Loss (g)"])
         layout.addWidget(self._table, 1)
 
         act = QHBoxLayout()
-        edit_btn = QPushButton("✏  Edit"); edit_btn.setObjectName("BtnSecondary"); edit_btn.clicked.connect(self._edit)
-        del_btn = QPushButton("🗑  Delete"); del_btn.setObjectName("BtnDanger"); del_btn.clicked.connect(self._delete)
-        act.addStretch(); act.addWidget(edit_btn); act.addWidget(del_btn)
+        assign_btn = QPushButton("⚙  Assign Loss")
+        assign_btn.setObjectName("BtnPrimary"); assign_btn.clicked.connect(self._assign)
+        act.addStretch(); act.addWidget(assign_btn)
         layout.addLayout(act)
 
         self._overlay = LoadingOverlay(self)
-        DBWorker(MasterService.get_workers).result.connect(lambda w: setattr(self, '_workers', w))
         self._load()
 
     def _load(self, *_):
         self._overlay.show_over(self)
-        w = DBWorker(ProcessService.get_kambi_batches)
+        w = DBWorker(ProcessService.get_unrouted_faceting_losses)
         w.result.connect(self._on_data); w.error.connect(lambda m: self._overlay.hide_overlay()); w.start()
 
     def _on_data(self, batches):
         self._overlay.hide_overlay(); self._batches = batches
-        self._table.populate([[b.id, fmt_date(b.batch_date),
-                               fmt_weight(b.weight_in_g), fmt_weight(b.weight_out_g), fmt_weight(b.loss_g),
-                               fmt_weight(b.gold_box_drawn_g), fmt_weight(b.gold_returned_g),
-                               b.chains_linked, b.hooks_used, b.notes or ""] for b in batches])
+        self._table.populate([[b.id, fmt_date(b.from_date), fmt_date(b.to_date),
+                               b.assigned_to_type or "INDIVIDUAL",
+                               fmt_weight(b.weight_in_g), fmt_weight(b.weight_out_g),
+                               fmt_weight(b.weight_loss_g)] for b in batches])
 
-    def _add(self):
-        dlg = KambiDialog(self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            DBWorker(lambda: ProcessService.create_kambi_batch(**dlg.get_data())).start()
-            Toast.show_toast(self, "Kambi batch created.", "success"); self._load()
-
-    def _edit(self):
+    def _assign(self):
         row = self._table.currentRow()
         if row < 0: return Toast.show_toast(self, "Select a batch.", "warning")
         bid = int(self._table.item(row, 0).text())
         batch = next((b for b in self._batches if b.id == bid), None)
         if not batch: return
-        dlg = KambiDialog(self, batch)
+        dlg = AssignLossDialog(self, batch)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            DBWorker(lambda: ProcessService.update_kambi_batch(bid, **dlg.get_data())).start()
-            Toast.show_toast(self, "Updated.", "success"); self._load()
+            data = dlg.get_data()
+            def _run():
+                ProcessService.route_faceting_loss(bid, **data)
+            w = DBWorker(_run)
+            w.error.connect(lambda m: Toast.show_toast(self, f"Failed: {m}", "error"))
+            w.result.connect(lambda _: (Toast.show_toast(self, "Loss assigned.", "success"), self._load()))
+            w.start()
 
-    def _delete(self):
-        row = self._table.currentRow()
-        if row < 0: return
-        bid = int(self._table.item(row, 0).text())
-        if ConfirmDialog.ask(self, "Delete", "Delete this kambi batch?"):
-            DBWorker(lambda: ProcessService.delete_kambi_batch(bid)).start(); self._load()
+    def refresh(self):
+        self._load()
 
 
-class KambiDialog(QDialog):
-    def __init__(self, parent, batch=None):
-        super().__init__(parent); self.setWindowTitle("Kambi Batch")
-        self.setFixedSize(420, 420); self.setModal(True)
+class AssignLossDialog(QDialog):
+    def __init__(self, parent, batch):
+        super().__init__(parent); self.setWindowTitle(f"Assign Loss — Batch #{batch.id}")
+        self.setFixedSize(400, 320); self.setModal(True)
+        self._loss = batch.weight_loss_g
         form = QFormLayout(self); form.setContentsMargins(20, 20, 20, 20); form.setSpacing(10)
-        self._date = QDateEdit(); self._date.setCalendarPopup(True)
-        self._date.setDate(QDate.fromString(str(batch.batch_date), "yyyy-MM-dd") if batch else QDate.currentDate())
-        self._wt_in = QDoubleSpinBox(); self._wt_in.setRange(0,999999); self._wt_in.setDecimals(3)
-        self._wt_in.setValue(batch.weight_in_g if batch else 0)
-        self._wt_out = QDoubleSpinBox(); self._wt_out.setRange(0,999999); self._wt_out.setDecimals(3)
-        self._wt_out.setValue(batch.weight_out_g if batch else 0)
-        self._gb_drawn = QDoubleSpinBox(); self._gb_drawn.setRange(0,999999); self._gb_drawn.setDecimals(3)
-        self._gb_drawn.setValue(batch.gold_box_drawn_g if batch else 0)
-        self._returned = QDoubleSpinBox(); self._returned.setRange(0,999999); self._returned.setDecimals(3)
-        self._returned.setValue(batch.gold_returned_g if batch else 0)
-        self._chains = QSpinBox(); self._chains.setRange(0, 999999)
-        self._chains.setValue(batch.chains_linked if batch else 0)
-        self._hooks = QSpinBox(); self._hooks.setRange(0, 999999)
-        self._hooks.setValue(batch.hooks_used if batch else 0)
-        self._solder = QDoubleSpinBox(); self._solder.setRange(0,999999); self._solder.setDecimals(3)
-        self._solder.setValue(batch.solder_weight_g if batch else 0)
-        self._notes = QLineEdit(batch.notes or "" if batch else "")
-        for lbl, w in [("Date *", self._date), ("Wt In (g) *", self._wt_in),
-                        ("Wt Out (g) *", self._wt_out), ("GB Drawn (g)", self._gb_drawn),
-                        ("Gold Returned (g)", self._returned), ("Chains Linked", self._chains),
-                        ("Hooks Used", self._hooks), ("Solder (g)", self._solder), ("Notes", self._notes)]:
-            l = QLabel(lbl); l.setObjectName("FieldLabel"); form.addRow(l, w)
+
+        lbl = QLabel(f"Weight Loss: {batch.weight_loss_g:.3f} g"); lbl.setObjectName("FieldLabel")
+        form.addRow(lbl)
+
+        self._loss_melt = QDoubleSpinBox(); self._loss_melt.setRange(0, 999999); self._loss_melt.setDecimals(3)
+        self._loss_gbox = QDoubleSpinBox(); self._loss_gbox.setRange(0, 999999); self._loss_gbox.setDecimals(3)
+        for lbl2, w in [("Loss → Melting (g)", self._loss_melt), ("Loss → Gold Box (g)", self._loss_gbox)]:
+            l = QLabel(lbl2); l.setObjectName("FieldLabel"); form.addRow(l, w)
+
+        quick = QHBoxLayout()
+        btn_all_melt = QPushButton("All → Melting"); btn_all_melt.setObjectName("BtnSecondary")
+        btn_all_melt.clicked.connect(self._all_to_melting)
+        btn_all_gbox = QPushButton("All → Gold Box"); btn_all_gbox.setObjectName("BtnSecondary")
+        btn_all_gbox.clicked.connect(self._all_to_gold_box)
+        quick.addWidget(btn_all_melt); quick.addWidget(btn_all_gbox)
+        form.addRow(quick)
+
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
+        btns.accepted.connect(self._validate_and_accept); btns.rejected.connect(self.reject)
         form.addRow(btns)
 
+    def _all_to_melting(self):
+        self._loss_melt.setValue(self._loss); self._loss_gbox.setValue(0)
+
+    def _all_to_gold_box(self):
+        self._loss_gbox.setValue(self._loss); self._loss_melt.setValue(0)
+
+    def _validate_and_accept(self):
+        split = self._loss_melt.value() + self._loss_gbox.value()
+        if abs(split - self._loss) > 0.001:
+            QMessageBox.warning(
+                self, "Loss not fully assigned",
+                f"Weight Loss is {self._loss:.3f} g but Melting + Gold Box = {split:.3f} g.\n"
+                f"Use the quick buttons or adjust the split so both amounts add up to the total loss."
+            )
+            return
+        self.accept()
+
     def get_data(self):
-        return {"batch_date": self._date.date().toPyDate(), "weight_in_g": self._wt_in.value(),
-                "weight_out_g": self._wt_out.value(), "gold_box_drawn_g": self._gb_drawn.value(),
-                "gold_returned_g": self._returned.value(), "chains_linked": self._chains.value(),
-                "hooks_used": self._hooks.value(), "solder_weight_g": self._solder.value(),
-                "notes": self._notes.text() or None}
+        return {"loss_to_melting_g": self._loss_melt.value(), "loss_to_gold_box_g": self._loss_gbox.value()}
+

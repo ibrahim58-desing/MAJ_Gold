@@ -109,9 +109,10 @@ class MasterService(BaseService):
             return items
 
     @staticmethod
-    def create_team(name, process_type):
+    def create_team(name, process_type, team_lead_id=None, team_name=None):
         with MasterService.get_session() as db:
-            t = Team(name=name.strip(), process_type=process_type)
+            t = Team(name=name.strip(), team_name=(team_name or name).strip(),
+                     process_type=process_type, team_lead_id=team_lead_id)
             db.add(t)
             db.flush()
             db.refresh(t)

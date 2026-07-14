@@ -197,6 +197,34 @@ QPushButton#BtnIcon {
 }
 QPushButton#BtnIcon:hover { background: rgba(42,51,71,0.6); color: #F5A623; }
 
+QPushButton#BtnTally {
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 #F5A623, stop:1 #E8C547);
+    color: #0A0C14;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 2px;
+    font-weight: 700;
+    font-size: 12px;
+    min-height: 26px;
+}
+QPushButton#BtnTally:hover {
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 #FFB84D, stop:1 #F0D060);
+}
+
+QPushButton#BtnTallyMinus {
+    background: rgba(42,51,71,0.6);
+    color: #8A9BB5;
+    border: 1px solid #2A3347;
+    border-radius: 6px;
+    padding: 2px 6px;
+    font-size: 12px;
+    min-height: 20px;
+    min-width: 24px;
+}
+QPushButton#BtnTallyMinus:hover { background: rgba(42,51,71,0.9); color: #F0F4FF; }
+
 /* ═══════════════════════════════════════════════════
    TABLE
 ═══════════════════════════════════════════════════ */

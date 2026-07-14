@@ -14,12 +14,13 @@ from ui.pages.daybook_page import DaybookPage
 from ui.pages.gold_receipt_page import GoldReceiptPage
 from ui.pages.melt_page import MeltPage
 from ui.pages.gold_box_page import GoldBoxPage
-from ui.pages.goldsmith_page import GoldsmithPage
+from ui.goldsmith_ui import GoldsmithUI
 from ui.pages.stock_pages import FinishedStockPage, TotStockPage, StockSummaryPage
 from ui.pages.ledger_page import LedgerPage
 from ui.pages.v_account_page import VAccountPage
 from ui.pages.gs_pcs_page import GSPCSPage
-from ui.pages.process_pages import PolishPage, FacetingPage, KambiPage
+from ui.pages.process_pages import FacetingPage
+from ui.polish_ui import PolishUI
 from ui.wire_sheet_ui import WireSheetUI
 from config.settings import WINDOW_TITLE, WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT
 
@@ -32,10 +33,9 @@ PAGE_MAP = {
     "melt":          MeltPage,
     "gold_box":      GoldBoxPage,
     "wire_sheet":    WireSheetUI,
-    "goldsmith":     GoldsmithPage,
-    "polish":        PolishPage,
+    "goldsmith":     GoldsmithUI,
+    "polish":        PolishUI,
     "faceting":      FacetingPage,
-    "kambi":         KambiPage,
     "finished_stock":FinishedStockPage,
     "tot_stock":     TotStockPage,
     "stock_summary": StockSummaryPage,
@@ -52,10 +52,9 @@ PAGE_TITLES = {
     "melt":          ("Melt Batches", "NG Melting & Scrap Melting"),
     "gold_box":      ("Gold Box", "Physical gold storage — Stock & Issues"),
     "wire_sheet":    ("Wire & Sheet", "Wire drawing & sheet rolling batches"),
-    "goldsmith":     ("Goldsmith", "GS-CLOSING — Batches · Logs · Pay"),
-    "polish":        ("Polish", "Polish batches — chain count only"),
+    "goldsmith":     ("Goldsmith", "Issue gold, track returns, team management"),
+    "polish":        ("Polish", "Isolated Polish Loss tracking"),
     "faceting":      ("Faceting", "Faceting batches — V Account linked"),
-    "kambi":         ("Kambi", "Linking process — chain + hook"),
     "finished_stock":("Finished Stock", "Jewellery stock register"),
     "tot_stock":     ("Tot Stock", "Total Stock Register — CHAIN / BOX / FACTORY"),
     "stock_summary": ("Stock Summary", "STOCK_SUM — Gold Box · 24K · V Account"),
@@ -144,12 +143,19 @@ class MainWindow(QMainWindow):
             return
 
         # Lazy-load pages
-        if key not in self._page_cache:
+        is_revisit = key in self._page_cache
+        if not is_revisit:
             page = PAGE_MAP[key]()
             self._page_cache[key] = page
             self._stack.addWidget(page)
 
-        self._stack.setCurrentWidget(self._page_cache[key])
+        page = self._page_cache[key]
+        if is_revisit and hasattr(page, "refresh"):
+            # Cached pages don't re-fetch on their own; other pages may have
+            # changed shared data (Gold Box, V Account, etc.) since we left.
+            page.refresh()
+
+        self._stack.setCurrentWidget(page)
         self._sidebar.set_active(key)
 
         title, subtitle = PAGE_TITLES.get(key, (key.replace("_", " ").title(), ""))

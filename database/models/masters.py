@@ -7,6 +7,8 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
 from .base import Base
+import database.models.stock # ensure stock models are loaded
+import database.models.gold_box # ensure gold_box models are loaded
 
 
 class ProcessType(str, enum.Enum):
@@ -54,11 +56,23 @@ class Team(Base):
     __tablename__ = "teams"
 
     id           = Column(Integer, primary_key=True, index=True)
-    name         = Column(String(50), nullable=False)
-    process_type = Column(String(20), nullable=False)
+    name         = Column(String(100), nullable=False)
+    team_name    = Column(String(100)) # alias or alternate field
+    process_type = Column(String(20))
+    team_lead_id = Column(Integer, ForeignKey('workers.id'), nullable=True)
+    is_active    = Column(Boolean, default=True)
     created_at   = Column(DateTime, server_default=func.now())
 
-    workers = relationship("Worker", back_populates="team")
+    workers = relationship("Worker", back_populates="team", foreign_keys="Worker.team_id")
+
+class TeamMember(Base):
+    __tablename__ = 'team_members'
+
+    id          = Column(Integer, primary_key=True)
+    team_id     = Column(Integer, ForeignKey('teams.id'), nullable=False)
+    worker_id   = Column(Integer, ForeignKey('workers.id'), nullable=False)
+    joined_date = Column(Date)
+    is_active   = Column(Boolean, default=True)
 
 
 class Worker(Base):
@@ -77,7 +91,7 @@ class Worker(Base):
     joined_on       = Column(Date)
     created_at      = Column(DateTime, server_default=func.now())
 
-    team                  = relationship("Team", back_populates="workers")
+    team                  = relationship("Team", back_populates="workers", foreign_keys="Worker.team_id")
     goldsmith_logs        = relationship("GoldsmithWorkerLog", back_populates="worker")
     gold_box_issues       = relationship("GoldBoxIssue", back_populates="worker")
     v_account_entries     = relationship("VAccountEntry", back_populates="worker")

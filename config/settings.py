@@ -57,14 +57,13 @@ NAV_ITEMS = [
     ("Goldsmith",      "⚒",  "goldsmith"),
     ("Polish",         "✨", "polish"),
     ("Faceting",       "💎", "faceting"),
-    ("Kambi",          "🔩", "kambi"),
+    ("V Account",      "🔐", "v_account"),
     ("─────────────", None,  None),
     ("Finished Stock", "🏺", "finished_stock"),
     ("Tot Stock",      "📊", "tot_stock"),
     ("Stock Summary",  "📈", "stock_summary"),
     ("─────────────", None,  None),
     ("Ledger",         "📜", "ledger"),
-    ("V Account",      "🔐", "v_account"),
     ("GS-PCS Report",  "📋", "gs_pcs"),
 ]
 

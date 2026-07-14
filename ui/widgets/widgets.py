@@ -178,8 +178,10 @@ class StatCard(QFrame):
         layout.addLayout(text_col)
         layout.addStretch()
 
-    def set_value(self, value: str):
+    def set_value(self, value: str, color: str = None):
         self._val_lbl.setText(value)
+        if color:
+            self._val_lbl.setStyleSheet(f"color:{color}; font-size:24px; font-weight:800;")
 
 
 # ─── Search Bar ───────────────────────────────────────────────────────────────

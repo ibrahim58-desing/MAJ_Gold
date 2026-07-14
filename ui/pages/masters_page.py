@@ -291,13 +291,19 @@ class WorkerDialog(QDialog):
 
 # ─── Teams Tab ────────────────────────────────────────────────────────────────
 class TeamsTab(QWidget):
-    COLS = ["ID", "Name", "Process Type", "Created"]
+    COLS = ["ID", "Name", "Process Type", "Team Lead", "Created"]
 
     def __init__(self):
         super().__init__()
+        self._teams = []; self._workers = []
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
+
+        info = QLabel("⚠  A team without a Team Lead cannot be credited/debited in "
+                       "V Account, Goldsmith, Polish, or Wire & Sheet — set one here.")
+        info.setStyleSheet("color:#F5A623; font-size:12px; font-style:italic;")
+        layout.addWidget(info)
 
         bar = QHBoxLayout()
         add_btn = QPushButton("＋  Add Team")
@@ -308,8 +314,21 @@ class TeamsTab(QWidget):
 
         self._table = DataTable(self.COLS)
         layout.addWidget(self._table, 1)
+
+        act = QHBoxLayout()
+        edit_btn = QPushButton("✏  Edit"); edit_btn.setObjectName("BtnSecondary")
+        edit_btn.clicked.connect(self._edit)
+        act.addStretch(); act.addWidget(edit_btn)
+        layout.addLayout(act)
+
         self._overlay = LoadingOverlay(self)
+        w = DBWorker(MasterService.get_workers)
+        w.result.connect(self._on_workers)
+        w.start()
         self._load()
+
+    def _on_workers(self, workers):
+        self._workers = workers
 
     def _load(self):
         self._overlay.show_over(self)
@@ -317,33 +336,61 @@ class TeamsTab(QWidget):
         w.result.connect(self._on_data); w.error.connect(lambda m: self._overlay.hide_overlay()); w.start()
 
     def _on_data(self, teams):
-        self._overlay.hide_overlay()
-        self._table.populate([[t.id, t.name, t.process_type, fmt_date(t.created_at)] for t in teams])
+        self._overlay.hide_overlay(); self._teams = teams
+        lead_names = {w.id: w.name for w in self._workers}
+        self._table.populate([[
+            t.id, t.name, t.process_type,
+            lead_names.get(t.team_lead_id, "— none —") if t.team_lead_id else "— none —",
+            fmt_date(t.created_at)] for t in teams])
 
     def _add(self):
-        dlg = TeamDialog(self)
+        dlg = TeamDialog(self, self._workers)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             d = dlg.get_data()
-            DBWorker(lambda: MasterService.create_team(d["name"], d["process_type"])).start()
+            DBWorker(lambda: MasterService.create_team(**d)).start()
             Toast.show_toast(self, "Team added.", "success"); self._load()
+
+    def _edit(self):
+        row = self._table.currentRow()
+        if row < 0: return Toast.show_toast(self, "Select a team.", "warning")
+        tid = int(self._table.item(row, 0).text())
+        team = next((t for t in self._teams if t.id == tid), None)
+        if not team: return
+        dlg = TeamDialog(self, self._workers, team)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            d = dlg.get_data()
+            DBWorker(lambda: MasterService.update_team(tid, **d)).start()
+            Toast.show_toast(self, "Team updated.", "success"); self._load()
 
 
 class TeamDialog(QDialog):
-    def __init__(self, parent):
+    PROCESS_TYPES = ["GOLDSMITH", "FACETING", "POLISH", "WIRE_SHEET"]
+
+    def __init__(self, parent, workers, team=None):
         super().__init__(parent)
-        self.setWindowTitle("New Team"); self.setFixedSize(340, 180); self.setModal(True)
+        self.setWindowTitle("Edit Team" if team else "New Team")
+        self.setFixedSize(360, 240); self.setModal(True)
         form = QFormLayout(self)
         form.setContentsMargins(20, 20, 20, 20); form.setSpacing(12)
-        self._name = QLineEdit()
-        self._pt = QComboBox(); self._pt.addItems(["GOLDSMITH", "FACETING"])
-        for lbl, w in [("Name *", self._name), ("Process Type", self._pt)]:
+        self._name = QLineEdit(team.name if team else "")
+        self._pt = QComboBox(); self._pt.addItems(self.PROCESS_TYPES)
+        if team and team.process_type in self.PROCESS_TYPES:
+            self._pt.setCurrentText(team.process_type)
+        self._lead = QComboBox()
+        self._lead_ids = [None] + [w.id for w in workers]
+        self._lead.addItems(["— none —"] + [f"{w.code} — {w.name}" for w in workers])
+        if team and team.team_lead_id in self._lead_ids:
+            self._lead.setCurrentIndex(self._lead_ids.index(team.team_lead_id))
+        for lbl, w in [("Name *", self._name), ("Process Type", self._pt), ("Team Lead", self._lead)]:
             l = QLabel(lbl); l.setObjectName("FieldLabel"); form.addRow(l, w)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
         form.addRow(btns)
 
     def get_data(self):
-        return {"name": self._name.text().strip(), "process_type": self._pt.currentText()}
+        name = self._name.text().strip()
+        return {"name": name, "team_name": name, "process_type": self._pt.currentText(),
+                "team_lead_id": self._lead_ids[self._lead.currentIndex()]}
 
 
 # ─── Types Tab ────────────────────────────────────────────────────────────────

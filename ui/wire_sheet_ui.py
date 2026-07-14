@@ -1,138 +1,126 @@
-"""Wire & Sheet — single-page UI.  One output per batch (dye / wire / strip)."""
+"""Wire & Sheet — single-page UI. Inline output editing."""
 from datetime import date
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
     QDateEdit, QDoubleSpinBox, QTextEdit, QDialog, QFrame,
-    QMessageBox, QScrollArea,
+    QMessageBox, QScrollArea, QLineEdit
 )
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QColor, QFont
 
 from services.wire_sheet_service import (
-    create_batch, complete_batch, get_all_batches,
-    get_batch_by_id, get_total_rod_received,
+    create_batch, record_outputs, get_all_batches,
+    get_batch_by_id, get_total_rod_received, clear_test_data
 )
+from database.models.base import SessionLocal, Setting
+from workers.db_worker import DBWorker
+from utils.formatters import fmt_weight
+from ui.widgets.process_widgets import WorkerTeamSelector
+from ui.widgets.widgets import StatCard, DataTable
 
 
-# ─── Tiny reusable widgets (inline so no external dependency) ────────────────
-
-class _StatCard(QFrame):
-    def __init__(self, title, value="0"):
-        super().__init__()
-        self.setStyleSheet(
-            "QFrame{background:#1A1A1A;border:1px solid #333;border-radius:8px;}"
-        )
-        ly = QVBoxLayout(self)
-        t = QLabel(title)
-        t.setStyleSheet("color:#B0B0B0;font-size:12px;border:none;")
-        self._v = QLabel(str(value))
-        self._v.setStyleSheet(
-            "color:#F5F5F5;font-size:18px;font-weight:bold;border:none;"
-        )
-        ly.addWidget(t)
-        ly.addWidget(self._v)
-
-    def set_value(self, v, color="#F5F5F5"):
-        self._v.setText(str(v))
-        self._v.setStyleSheet(
-            f"color:{color};font-size:18px;font-weight:bold;border:none;"
-        )
-
+# ─── Tiny reusable widgets ───────────────────────────────────────────────────
 
 class _GoldCard(QFrame):
     def __init__(self, title=None):
         super().__init__()
-        self.setStyleSheet(
-            "QFrame{background:#1A1A1A;border:1px solid rgba(212,175,55,0.2);"
-            "border-radius:8px;}"
-        )
+        self.setObjectName("CardGold")
         self.inner = QVBoxLayout(self)
+        self.inner.setContentsMargins(16, 14, 16, 16)
+        self.inner.setSpacing(10)
         if title:
             lbl = QLabel(title)
-            lbl.setStyleSheet(
-                "color:#D4AF37;font-weight:bold;border:none;font-size:14px;"
-            )
+            lbl.setObjectName("SectionTitle")
             self.inner.addWidget(lbl)
 
 
-TYPE_COLOURS = {"dye": "#7B8FD4", "wire": "#D4AF37", "strip": "#C0C0C0"}
+def _field_label(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setObjectName("FieldLabel")
+    return lbl
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  MAIN PAGE
-# ═══════════════════════════════════════════════════════════════════════════════
+_INLINE_EDIT_QSS = """
+    QLineEdit {
+        background: rgba(245,166,35,0.08);
+        color: #F0F4FF;
+        border: 1px solid rgba(245,166,35,0.35);
+        border-radius: 6px;
+        padding: 4px 8px;
+        font-size: 12px;
+    }
+    QLineEdit:focus { border-color: #F5A623; }
+"""
+
 
 class WireSheetUI(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._check_sample_data()
         self._build()
         self._load()
 
-    # ── build ─────────────────────────────────────────────────────────────────
+    def _check_sample_data(self):
+        session = SessionLocal()
+        try:
+            setting = session.query(Setting).filter(
+                Setting.key == "ws_sample_cleared"
+            ).first()
+            if not setting:
+                clear_test_data()
+                session.add(Setting(
+                    key="ws_sample_cleared",
+                    value="true"
+                ))
+                session.commit()
+        except Exception as e:
+            session.rollback()
+            print("Error clearing test data:", e)
+        finally:
+            session.close()
+
     def _build(self):
-        self.setStyleSheet("QWidget{background:#0D0D0D;color:#F5F5F5;}")
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 20, 24, 20)
         root.setSpacing(20)
 
         # header row
         hdr = QHBoxLayout()
-        title = QLabel("Wire & Sheet")
-        title.setStyleSheet("color:#D4AF37;font-size:22px;font-weight:bold;")
+        title = QLabel("🔗  WIRE & SHEET")
+        title.setStyleSheet("font-size:20px; font-weight:800; color:#F0F4FF;")
         sub = QLabel("Rod → Dye / Wire / Strip")
-        sub.setStyleSheet("color:#B0B0B0;font-size:13px;")
+        sub.setStyleSheet("color:#8A9BB5; font-size:12px;")
         left = QVBoxLayout()
         left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(2)
         left.addWidget(title)
         left.addWidget(sub)
         hdr.addLayout(left)
         hdr.addStretch()
         btn_new = QPushButton("＋  New Batch")
-        btn_new.setStyleSheet(
-            "background:#D4AF37;color:#0D0D0D;font-weight:bold;"
-            "border-radius:4px;padding:10px 20px;font-size:13px;"
-        )
+        btn_new.setObjectName("BtnPrimary")
         btn_new.clicked.connect(self._on_new)
         hdr.addWidget(btn_new)
         root.addLayout(hdr)
 
         # summary cards
         cards = QHBoxLayout()
-        self.c_rod   = _StatCard("Total Rod Received (g)")
-        self.c_batch = _StatCard("Total Batches")
-        self.c_pend  = _StatCard("Pending")
-        self.c_loss  = _StatCard("Total Loss (g)")
+        self.c_rod   = StatCard("Total Rod Received (g)", "0.000", icon="🪙", color="#F5A623")
+        self.c_batch = StatCard("Total Batches", "0", icon="📦")
+        self.c_pend  = StatCard("Pending", "0", icon="⏳", color="#2ED573")
+        self.c_loss  = StatCard("Total Loss (g)", "0.000", icon="⚠", color="#FF4757")
         for c in (self.c_rod, self.c_batch, self.c_pend, self.c_loss):
             cards.addWidget(c)
         root.addLayout(cards)
 
         # table
-        tcard = _GoldCard()
-        self.table = QTableWidget()
-        self.table.setColumnCount(8)
-        self.table.setHorizontalHeaderLabels([
-            "ID", "Date", "Type", "Credit (g)", "Debit (g)",
-            "Loss (g)", "Status", "Actions",
+        self.table = DataTable([
+            "ID", "Date", "Worker", "Rod (g)", "Dye (g)", "Wire (g)",
+            "Strips (g)", "Loss (g)", "Loss%", "Status", "Actions"
         ])
-        self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setShowGrid(False)
-        self.table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        self.table.setStyleSheet(
-            "QTableWidget{background:#1A1A1A;border:none;}"
-            "QHeaderView::section{background:#111;color:#D4AF37;"
-            "font-weight:bold;border:none;padding:6px;}"
-            "QTableWidget::item{padding:4px;}"
-        )
-        tcard.inner.addWidget(self.table)
-        root.addWidget(tcard, 1)
+        root.addWidget(self.table, 1)
 
-    # ── load data ─────────────────────────────────────────────────────────────
     def _load(self):
         batches = get_all_batches()
         total_rod = get_total_rod_received()
@@ -140,76 +128,76 @@ class WireSheetUI(QWidget):
         pending = sum(1 for b in batches if b["status"] == "pending")
         total_loss = sum(b["loss_g"] for b in batches)
 
-        self.c_rod.set_value(f"{total_rod:.3f}", "#D4AF37")
+        self.c_rod.set_value(f"{total_rod:.3f}")
         self.c_batch.set_value(str(len(batches)))
-        self.c_pend.set_value(str(pending), "#FF9800" if pending else "#4CAF50")
+        self.c_pend.set_value(str(pending), "#F5A623" if pending else "#2ED573")
         self.c_loss.set_value(f"{total_loss:.3f}")
 
+        self.table.setSortingEnabled(False)
+        self.table.clearContents()
         self.table.setRowCount(len(batches))
         for row, b in enumerate(batches):
-            self.table.setRowHeight(row, 42)
+            self.table.setRowHeight(row, 48)
 
             # ID
             self.table.setItem(row, 0, QTableWidgetItem(f"#{b['id']}"))
 
             # Date
-            self.table.setItem(
-                row, 1,
-                QTableWidgetItem(b["batch_date"].strftime("%d-%m-%Y")),
-            )
+            self.table.setItem(row, 1, QTableWidgetItem(b["batch_date"].strftime("%d-%m-%Y")))
 
-            # Type — colour-coded badge
-            typ = b["batch_type"].capitalize()
-            type_item = QTableWidgetItem(typ)
-            type_item.setForeground(
-                QColor(TYPE_COLOURS.get(b["batch_type"], "#FFF"))
-            )
-            type_item.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-            self.table.setItem(row, 2, type_item)
+            # Worker
+            self.table.setItem(row, 2, QTableWidgetItem(b.get("worker_name", "—")))
 
-            # Credit
+            # Rod
             cr = QTableWidgetItem(f"{b['rod_weight_g']:.3f}")
-            cr.setForeground(QColor("#4CAF50"))
+            cr.setForeground(QColor("#2ED573"))
             self.table.setItem(row, 3, cr)
 
-            # Debit
-            if b["status"] == "pending":
-                dr = QTableWidgetItem("Pending")
-                dr.setForeground(QColor("#FF9800"))
-                dr.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-            else:
-                dr = QTableWidgetItem(f"{b['output_weight_g']:.3f}")
-                dr.setForeground(QColor("#F44336"))
-            self.table.setItem(row, 4, dr)
+            # Cells for live calculation
+            loss_cell = QTableWidgetItem()
+            loss_pct_cell = QTableWidgetItem()
 
-            # Loss
             if b["status"] == "pending":
-                lo = QTableWidgetItem("Pending")
-                lo.setForeground(QColor("#FF9800"))
+                # Create 3 inputs
+                inputs = []
+                for col in (4, 5, 6): # Dye, Wire, Strips
+                    inp = QLineEdit()
+                    inp.setPlaceholderText("0.000")
+                    inp.setStyleSheet(_INLINE_EDIT_QSS)
+                    inputs.append(inp)
+                    self.table.setCellWidget(row, col, inp)
+
+                inputs[0].textChanged.connect(lambda _, r=b['rod_weight_g'], rw=row, i_list=inputs: self._update_live_loss(r, i_list, rw))
+                inputs[1].textChanged.connect(lambda _, r=b['rod_weight_g'], rw=row, i_list=inputs: self._update_live_loss(r, i_list, rw))
+                inputs[2].textChanged.connect(lambda _, r=b['rod_weight_g'], rw=row, i_list=inputs: self._update_live_loss(r, i_list, rw))
+
+                loss_cell.setText("Pending")
+                loss_cell.setForeground(QColor("#F5A623"))
+                loss_pct_cell.setText("—")
+
             else:
-                lo = QTableWidgetItem(f"{b['loss_g']:.3f}")
+                self.table.setItem(row, 4, QTableWidgetItem(fmt_weight(b.get("dye_weight_g", 0))))
+                self.table.setItem(row, 5, QTableWidgetItem(fmt_weight(b.get("wire_weight_g", 0))))
+                self.table.setItem(row, 6, QTableWidgetItem(fmt_weight(b.get("strips_weight_g", 0))))
+
+                loss_cell.setText(f"{b['loss_g']:.3f}")
+                loss_pct_cell.setText(f"{b['loss_pct']:.2f}%")
+
                 if b["loss_pct"] <= 2:
-                    lo.setForeground(QColor("#4CAF50"))
+                    loss_pct_cell.setForeground(QColor("#2ED573"))
                 elif b["loss_pct"] <= 5:
-                    lo.setForeground(QColor("#FF9800"))
+                    loss_pct_cell.setForeground(QColor("#F5A623"))
                 else:
-                    lo.setForeground(QColor("#F44336"))
-            self.table.setItem(row, 5, lo)
+                    loss_pct_cell.setForeground(QColor("#FF4757"))
+
+            self.table.setItem(row, 7, loss_cell)
+            self.table.setItem(row, 8, loss_pct_cell)
 
             # Status badge
             st_lbl = QLabel("Pending" if b["status"] == "pending" else "Completed")
-            if b["status"] == "pending":
-                st_lbl.setStyleSheet(
-                    "background:rgba(255,152,0,0.12);color:#FF9800;"
-                    "border-radius:10px;border:1px solid #FF9800;padding:2px 8px;"
-                )
-            else:
-                st_lbl.setStyleSheet(
-                    "background:rgba(76,175,80,0.12);color:#4CAF50;"
-                    "border-radius:10px;border:1px solid #4CAF50;padding:2px 8px;"
-                )
+            st_lbl.setObjectName("BadgeGold" if b["status"] == "pending" else "BadgeSuccess")
             st_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setCellWidget(row, 6, st_lbl)
+            self.table.setCellWidget(row, 9, st_lbl)
 
             # Actions
             act = QWidget()
@@ -218,92 +206,124 @@ class WireSheetUI(QWidget):
             aly.setSpacing(6)
 
             if b["status"] == "pending":
-                btn = QPushButton("Complete")
-                btn.setStyleSheet(
-                    "background:#D4AF37;color:#0D0D0D;padding:4px 10px;"
-                    "border-radius:3px;font-weight:bold;"
-                )
+                btn = QPushButton("Save")
+                btn.setObjectName("BtnPrimary")
                 btn.clicked.connect(
-                    lambda _, bid=b["id"]: self._on_complete(bid)
+                    lambda _, bid=b["id"], r=row: self._on_save_row(bid, r)
                 )
                 aly.addWidget(btn)
             else:
-                info = QLabel(f"Loss {b['loss_pct']:.1f}%")
-                col = "#4CAF50" if b["loss_pct"] <= 2 else (
-                    "#FF9800" if b["loss_pct"] <= 5 else "#F44336"
-                )
-                info.setStyleSheet(f"color:{col};font-weight:bold;border:none;")
+                info = QLabel("✓")
+                info.setObjectName("BadgeSuccess")
                 aly.addWidget(info)
 
-            self.table.setCellWidget(row, 7, act)
+            self.table.setCellWidget(row, 10, act)
+        self.table.setSortingEnabled(True)
 
-    # ── actions ───────────────────────────────────────────────────────────────
+    def _update_live_loss(self, rod, inputs, row):
+        try:
+            dye = float(inputs[0].text() or 0)
+            wire = float(inputs[1].text() or 0)
+            strips = float(inputs[2].text() or 0)
+
+            total = dye + wire + strips
+            loss = rod - total
+            loss_pct = (loss / rod * 100) if rod > 0 else 0.0
+
+            loss_cell = self.table.item(row, 7)
+            loss_pct_cell = self.table.item(row, 8)
+            if not loss_cell or not loss_pct_cell:
+                return
+
+            loss_cell.setText(f"{loss:.3f}")
+            loss_pct_cell.setText(f"{loss_pct:.2f}%")
+
+            if loss_pct <= 2:
+                loss_pct_cell.setForeground(QColor("#2ED573"))
+            elif loss_pct <= 5:
+                loss_pct_cell.setForeground(QColor("#F5A623"))
+            else:
+                loss_pct_cell.setForeground(QColor("#FF4757"))
+
+        except ValueError:
+            pass
+
     def _on_new(self):
         dlg = _NewBatchDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._load()
 
-    def _on_complete(self, batch_id):
-        dlg = _CompleteBatchDialog(batch_id, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._load()
+    def refresh(self):
+        self._load()
 
+    def _on_save_row(self, batch_id, row):
+        try:
+            dye_inp = self.table.cellWidget(row, 4)
+            wire_inp = self.table.cellWidget(row, 5)
+            strips_inp = self.table.cellWidget(row, 6)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  NEW BATCH DIALOG
-# ═══════════════════════════════════════════════════════════════════════════════
+            dye = float(dye_inp.text() or 0)
+            wire = float(wire_inp.text() or 0)
+            strips = float(strips_inp.text() or 0)
+
+            if dye == 0 and wire == 0 and strips == 0:
+                QMessageBox.warning(self, "Error", "Enter at least one output value.")
+                return
+
+            res = record_outputs(batch_id, {
+                "dye_weight_g": dye,
+                "wire_weight_g": wire,
+                "strips_weight_g": strips
+            })
+
+            if res.get("success"):
+                pct = res.get("loss_pct", 0)
+                if pct > 2:
+                    QMessageBox.warning(
+                        self, "Loss Alert",
+                        f"Loss is {pct:.2f}% — please verify the weights.",
+                    )
+                self._load()
+            else:
+                QMessageBox.critical(
+                    self, "Error", f"Failed:\n{res.get('error')}"
+                )
+        except ValueError:
+            QMessageBox.warning(self, "Error", "Invalid numeric values entered.")
+
 
 class _NewBatchDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("New Wire & Sheet Batch")
-        self.setFixedSize(480, 380)
-        self.setStyleSheet(
-            "QDialog{background:#0D0D0D;color:#F5F5F5;}"
-            "QLabel{color:#F5F5F5;}"
-        )
+        self.setFixedSize(480, 500)
 
         ly = QVBoxLayout(self)
-
         card = _GoldCard("Batch Details")
 
         # date
-        card.inner.addWidget(QLabel("Date"))
+        card.inner.addWidget(_field_label("Date *"))
         self.dt = QDateEdit()
         self.dt.setCalendarPopup(True)
         self.dt.setDate(QDate.currentDate())
         card.inner.addWidget(self.dt)
 
-        # type
-        card.inner.addWidget(QLabel("Output Type"))
-        self.type_cb = QComboBox()
-        self.type_cb.addItems(["dye", "wire", "strip"])
-        self.type_cb.setStyleSheet(
-            "QComboBox{background:#111;border:1px solid #333;padding:6px;"
-            "color:#F5F5F5;border-radius:4px;}"
-        )
-        card.inner.addWidget(self.type_cb)
+        # worker / team
+        self.selector = WorkerTeamSelector(process_type="WIRE_SHEET")
+        card.inner.addWidget(self.selector)
 
         # rod weight
-        card.inner.addWidget(QLabel("Rod Weight (g)  —  Credit"))
+        card.inner.addWidget(_field_label("Rod Weight (g)  —  Credit *"))
         self.rod = QDoubleSpinBox()
         self.rod.setRange(0.001, 99999.999)
         self.rod.setDecimals(3)
         self.rod.setSuffix("  g")
-        self.rod.setStyleSheet(
-            "QDoubleSpinBox{background:#111;border:1px solid #333;"
-            "padding:6px;color:#F5F5F5;border-radius:4px;}"
-        )
         card.inner.addWidget(self.rod)
 
         # notes
-        card.inner.addWidget(QLabel("Notes (optional)"))
+        card.inner.addWidget(_field_label("Notes (optional)"))
         self.notes = QTextEdit()
         self.notes.setFixedHeight(44)
-        self.notes.setStyleSheet(
-            "QTextEdit{background:#111;border:1px solid #333;"
-            "color:#F5F5F5;border-radius:4px;}"
-        )
         card.inner.addWidget(self.notes)
 
         ly.addWidget(card)
@@ -312,15 +332,10 @@ class _NewBatchDialog(QDialog):
         ft = QHBoxLayout()
         ft.addStretch()
         btn_cancel = QPushButton("Cancel")
-        btn_cancel.setStyleSheet(
-            "background:#333;color:#FFF;padding:8px 16px;border-radius:4px;"
-        )
+        btn_cancel.setObjectName("BtnSecondary")
         btn_cancel.clicked.connect(self.reject)
         btn_save = QPushButton("Save Batch")
-        btn_save.setStyleSheet(
-            "background:#D4AF37;color:#0D0D0D;font-weight:bold;"
-            "padding:8px 16px;border-radius:4px;"
-        )
+        btn_save.setObjectName("BtnPrimary")
         btn_save.clicked.connect(self._save)
         ft.addWidget(btn_cancel)
         ft.addWidget(btn_save)
@@ -333,8 +348,8 @@ class _NewBatchDialog(QDialog):
         d = self.dt.date()
         res = create_batch({
             "batch_date":   date(d.year(), d.month(), d.day()),
-            "batch_type":   self.type_cb.currentText(),
             "rod_weight_g": self.rod.value(),
+            **self.selector.as_dict(),
             "notes":        self.notes.toPlainText(),
         })
         if res.get("success"):
@@ -342,138 +357,4 @@ class _NewBatchDialog(QDialog):
         else:
             QMessageBox.critical(
                 self, "Error", f"Failed to save:\n{res.get('error')}"
-            )
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  COMPLETE BATCH DIALOG
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class _CompleteBatchDialog(QDialog):
-    def __init__(self, batch_id, parent=None):
-        super().__init__(parent)
-        self.batch_id = batch_id
-        self.bd = get_batch_by_id(batch_id)
-        self.setWindowTitle(f"Complete Batch #{batch_id}")
-        self.setFixedSize(500, 420)
-        self.setStyleSheet(
-            "QDialog{background:#0D0D0D;color:#F5F5F5;}"
-            "QLabel{color:#F5F5F5;}"
-        )
-
-        ly = QVBoxLayout(self)
-
-        # summary
-        info = _GoldCard("Batch Info")
-        rod_val = self.bd["rod_weight_g"]
-        typ = self.bd["batch_type"].capitalize()
-        col = TYPE_COLOURS.get(self.bd["batch_type"], "#FFF")
-        info.inner.addWidget(QLabel(f"Batch #{batch_id}"))
-        info.inner.addWidget(QLabel(
-            f"Date: {self.bd['batch_date'].strftime('%d-%m-%Y')}"
-        ))
-        type_lbl = QLabel(f"Type: {typ}")
-        type_lbl.setStyleSheet(f"color:{col};font-weight:bold;border:none;")
-        info.inner.addWidget(type_lbl)
-        rod_lbl = QLabel(f"Rod Weight (Credit): {rod_val:.3f} g")
-        rod_lbl.setStyleSheet("color:#D4AF37;font-weight:bold;border:none;")
-        info.inner.addWidget(rod_lbl)
-        ly.addWidget(info)
-
-        # output weight
-        form = _GoldCard("Record Output")
-        form.inner.addWidget(QLabel(f"Output Weight (g)  —  Debit"))
-        self.out_wt = QDoubleSpinBox()
-        self.out_wt.setRange(0.0, 99999.999)
-        self.out_wt.setDecimals(3)
-        self.out_wt.setSuffix("  g")
-        self.out_wt.setStyleSheet(
-            "QDoubleSpinBox{background:#111;border:1px solid #333;"
-            "padding:6px;color:#F5F5F5;border-radius:4px;}"
-        )
-        self.out_wt.valueChanged.connect(self._calc)
-        form.inner.addWidget(self.out_wt)
-
-        self.lbl_loss   = QLabel("Loss: 0.000 g")
-        self.lbl_pct    = QLabel("Loss %: 0.00%")
-        for l in (self.lbl_loss, self.lbl_pct):
-            l.setStyleSheet("border:none;font-size:13px;")
-            form.inner.addWidget(l)
-        ly.addWidget(form)
-
-        # footer
-        ft = QHBoxLayout()
-        ft.addStretch()
-        btn_cancel = QPushButton("Cancel")
-        btn_cancel.setStyleSheet(
-            "background:#333;color:#FFF;padding:8px 16px;border-radius:4px;"
-        )
-        btn_cancel.clicked.connect(self.reject)
-        self.btn_save = QPushButton("Mark Completed")
-        self.btn_save.setStyleSheet(
-            "background:#D4AF37;color:#0D0D0D;font-weight:bold;"
-            "padding:8px 16px;border-radius:4px;"
-        )
-        self.btn_save.clicked.connect(self._save)
-        ft.addWidget(btn_cancel)
-        ft.addWidget(self.btn_save)
-        ly.addLayout(ft)
-
-        self._calc()
-
-    def _calc(self):
-        rod = self.bd["rod_weight_g"]
-        out = self.out_wt.value()
-        loss = rod - out
-        pct = (loss / rod * 100) if rod > 0 else 0
-
-        self.lbl_loss.setText(f"Loss: {loss:.3f} g")
-
-        if out == 0:
-            self.lbl_pct.setText("Loss %: —")
-            self.lbl_pct.setStyleSheet("color:#666;border:none;font-size:13px;")
-        elif out > rod:
-            self.lbl_pct.setText("⚠ Output exceeds rod weight!")
-            self.lbl_pct.setStyleSheet(
-                "color:#F44336;font-weight:bold;border:none;font-size:13px;"
-            )
-            self.btn_save.setEnabled(False)
-            return
-        elif pct <= 2:
-            self.lbl_pct.setText(f"Loss %: {pct:.2f}%  ✓ Within limit")
-            self.lbl_pct.setStyleSheet(
-                "color:#4CAF50;border:none;font-size:13px;"
-            )
-        elif pct <= 5:
-            self.lbl_pct.setText(f"Loss %: {pct:.2f}%  ⚠ Check")
-            self.lbl_pct.setStyleSheet(
-                "color:#FF9800;border:none;font-size:13px;"
-            )
-        else:
-            self.lbl_pct.setText(f"Loss %: {pct:.2f}%  ⚠ High loss!")
-            self.lbl_pct.setStyleSheet(
-                "color:#F44336;font-weight:bold;border:none;font-size:13px;"
-            )
-        self.btn_save.setEnabled(True)
-
-    def _save(self):
-        out = self.out_wt.value()
-        if out > self.bd["rod_weight_g"]:
-            return
-        if out <= 0:
-            QMessageBox.warning(self, "Error", "Output weight must be > 0")
-            return
-
-        res = complete_batch(self.batch_id, out)
-        if res.get("success"):
-            pct = res.get("loss_pct", 0)
-            if pct > 2:
-                QMessageBox.warning(
-                    self, "Loss Alert",
-                    f"Loss is {pct:.2f}% — please verify the weights.",
-                )
-            self.accept()
-        else:
-            QMessageBox.critical(
-                self, "Error", f"Failed:\n{res.get('error')}"
             )

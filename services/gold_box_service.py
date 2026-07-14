@@ -143,13 +143,19 @@ class GoldBoxService(BaseService):
 
     @staticmethod
     def get_current_balance():
-        """Return latest closing balance."""
+        """Running balance = total stock IN minus total net issued OUT.
+
+        Computed directly from GoldBoxStock/GoldBoxIssue rather than the
+        manually-entered GoldBoxDailyBalance table, so it reflects every
+        automatic loss feed (Wire & Sheet, Goldsmith, Faceting, V Account
+        wire returns) immediately, not just whatever a user last typed into
+        the Daily Balance tab.
+        """
         with GoldBoxService.get_session() as db:
-            row = db.query(GoldBoxDailyBalance).order_by(
-                GoldBoxDailyBalance.balance_date.desc()
-            ).first()
-            if row:
-                val = row.closing_g
-                db.expunge(row)
-                return val
-            return 0.0
+            total_in = db.query(
+                func.coalesce(func.sum(GoldBoxStock.weight_added_g), 0.0)
+            ).scalar()
+            total_out = db.query(
+                func.coalesce(func.sum(GoldBoxIssue.net_used_g), 0.0)
+            ).scalar()
+            return round(total_in - total_out, 3)

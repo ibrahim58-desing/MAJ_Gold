@@ -7,6 +7,8 @@ from database.models.process import (
     GoldsmithDesignLog, PolishBatch, FacetingBatch, KambiBatch
 )
 from services.base_service import BaseService
+from services.melt_service import MeltService
+from services.gold_box_service import GoldBoxService
 from utils.formatters import calc_pay, calc_ppwl, calc_extra_loss
 
 
@@ -209,21 +211,96 @@ class ProcessService(BaseService):
             db.expunge_all(); return items
 
     @staticmethod
-    def create_faceting_batch(from_date, to_date, weight_in_g, weight_out_g, fin_pcs=0,
-                              ree_cu=0, act_fin_pcs=0, worker_id=None, team_id=None,
-                              polish_batch_id=None, product_type_id=None,
-                              v_account_used=True, notes=None):
-        wl = max(0.0, weight_in_g - weight_out_g)
+    def create_faceting_batch(from_date, weight_in_g, assigned_to_type="INDIVIDUAL",
+                              worker_id=None, team_id=None, in_qty_baby=0, in_qty_normal=0,
+                              in_qty_30inch=0, polish_batch_id=None, product_type_id=None,
+                              notes=None):
+        """Step 1 of the create->update flow. Faceting can take hours, so only
+        the input side (who, how much gold, what chain sizes) is captured now;
+        weight-out and loss routing are captured later via update_faceting_output."""
         with ProcessService.get_session() as db:
             fb = FacetingBatch(
-                from_date=from_date, to_date=to_date, worker_id=worker_id, team_id=team_id,
+                from_date=from_date, to_date=from_date, worker_id=worker_id, team_id=team_id,
+                assigned_to_type=assigned_to_type, status="pending",
                 polish_batch_id=polish_batch_id, weight_in_g=weight_in_g,
-                weight_out_g=weight_out_g, weight_loss_g=wl, fin_pcs=fin_pcs,
-                ree_cu=ree_cu, act_fin_pcs=act_fin_pcs,
-                act_wl=calc_ppwl(wl, act_fin_pcs or fin_pcs),
-                product_type_id=product_type_id, v_account_used=v_account_used, notes=notes,
+                weight_out_g=0.0, weight_loss_g=0.0,
+                in_qty_baby=in_qty_baby, in_qty_normal=in_qty_normal, in_qty_30inch=in_qty_30inch,
+                product_type_id=product_type_id, notes=notes,
             )
             db.add(fb); db.flush(); return fb.id
+
+    @staticmethod
+    def update_faceting_output(fb_id, to_date, weight_out_g, out_qty_baby=0, out_qty_normal=0,
+                               out_qty_30inch=0):
+        """Step 2 of the create->update flow: records output weight/chain tally
+        and computes the weight loss. Where that loss actually goes (Melting vs
+        Gold Box) usually isn't known yet at this point, so it's decided later
+        on the Faceting Loss page via route_faceting_loss()."""
+        with ProcessService.get_session() as db:
+            fb = db.query(FacetingBatch).get(fb_id)
+            if not fb: raise ValueError("Not found")
+            if fb.status != "pending": raise ValueError("Batch is not pending")
+
+            wl = max(0.0, fb.weight_in_g - weight_out_g)
+
+            fb.to_date = to_date
+            fb.weight_out_g = weight_out_g
+            fb.weight_loss_g = wl
+            fb.out_qty_baby = out_qty_baby
+            fb.out_qty_normal = out_qty_normal
+            fb.out_qty_30inch = out_qty_30inch
+            fb.status = "completed"
+            fb.loss_routed = False
+
+        return {"id": fb_id, "weight_loss_g": wl}
+
+    @staticmethod
+    def get_unrouted_faceting_losses():
+        """Completed Faceting batches whose loss hasn't been assigned to
+        Melting/Gold Box yet."""
+        with ProcessService.get_session() as db:
+            items = (
+                db.query(FacetingBatch)
+                .filter(FacetingBatch.status == "completed", FacetingBatch.loss_routed == False)
+                .order_by(FacetingBatch.to_date.desc())
+                .all()
+            )
+            db.expunge_all(); return items
+
+    @staticmethod
+    def route_faceting_loss(fb_id, loss_to_melting_g=0.0, loss_to_gold_box_g=0.0):
+        """Decide, after the fact, how much of a completed batch's weight loss
+        gets recycled back to Melting vs physically stored in the Gold Box."""
+        with ProcessService.get_session() as db:
+            fb = db.query(FacetingBatch).get(fb_id)
+            if not fb: raise ValueError("Not found")
+            if fb.status != "completed": raise ValueError("Batch is not completed yet")
+            if fb.loss_routed: raise ValueError("Loss already routed for this batch")
+
+            split = loss_to_melting_g + loss_to_gold_box_g
+            if abs(split - fb.weight_loss_g) > 0.001:
+                raise ValueError(
+                    f"Weight Loss is {fb.weight_loss_g:.3f} g but Melting + Gold Box = {split:.3f} g."
+                )
+
+            fb.loss_to_melting_g = loss_to_melting_g
+            fb.loss_to_gold_box_g = loss_to_gold_box_g
+            fb.loss_routed = True
+            to_date = fb.to_date
+
+        if loss_to_melting_g > 0:
+            MeltService.create_solder_return(
+                returned_date=to_date, source_process="FACETING",
+                source_batch_id=fb_id, weight_g=loss_to_melting_g,
+                notes=f"Faceting loss recycled to melting (batch #{fb_id})",
+            )
+        if loss_to_gold_box_g > 0:
+            GoldBoxService.add_stock(
+                added_date=to_date, source="FACETING", source_id=fb_id,
+                weight_added_g=loss_to_gold_box_g,
+                notes=f"Faceting loss routed to gold box (batch #{fb_id})",
+            )
+        return {"id": fb_id}
 
     @staticmethod
     def update_faceting_batch(fb_id, **kwargs):
